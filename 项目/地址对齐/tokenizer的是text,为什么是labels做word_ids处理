@@ -1,0 +1,92 @@
+[TOC]
+
+这个疑惑特别关键：**`word_ids()` 是 tokenizer 给出来的“token ←→ 原始 word(你传入的 text 序列元素)”的对齐关系**。
+你分词的是 `text`，但训练要算 loss 的是 **token 级别的输出 vs token 级别的 label**，所以必须把 **word 级 labels 映射到 token 级**——这一步就用 `word_ids()` 来做。
+
+换句话说：
+
+- 模型输入：token 序列（分词后的）
+- 模型输出：每个 token 一个预测（token classification）
+- 你的 labels：每个“原始 word”（你这里就是每个字/每个字符）一个标签
+  ➡️ **维度不一致**，所以需要对齐。
+
+------
+
+## 用这个例子直观讲一遍
+
+你的原始数据是：
+
+- `text = ["蒋","博","1","3",...,"区"]` （29 个“word”）
+- `labels = ["B-name","E-name","B-phone","I-phone",...,"E-detail"]`（29 个 label）
+
+你 tokenizer 后，实际喂给模型的是 token 序列（BERT 类一般会加特殊符号）：
+
+- tokens：`[CLS] 蒋 博 1 3 ... 区 [SEP]`
+- token 数量：**31**（比原来多 2 个）
+
+那问题来了：
+
+- `labels` 只有 29 个，怎么给 31 个 token 标注？
+  `[CLS]` 和 `[SEP]` 的 label 是啥？
+
+于是就要做：
+
+- `[CLS]`、`[SEP]` 的位置 label = **-100**（表示不参与 loss）
+- 其它 token 的 label = 它对应的原始字/字符的 label
+
+而“这个 token 对应原始第几个字？”就是 `word_ids()` 告诉你的。
+
+------
+
+## `word_ids()` 到底是什么
+
+你设置了 `is_split_into_words=True`，表示：
+
+> “我传进来的 `text` 已经是切好的 word 列表，不要把整句当一个字符串。”
+
+于是 tokenizer 会记录：**每个输出 token 来自输入列表中的哪个位置**。
+
+比如：
+
+```text
+tokens:    [CLS]  蒋  博  1  3 ... 区  [SEP]
+word_ids:  None    0   1  2  3 ... 28   None
+```
+
+- `None` 表示特殊 token（CLS/SEP/或 padding）
+- `0` 表示来自 `text[0] = "蒋"`
+- `1` 表示来自 `text[1] = "博"`
+- …
+
+所以你会看到代码里写：
+
+```python
+label_seq[j] if j is not None else -100
+```
+
+就是：
+
+- token 有对应 word（j 不为 None）→ 取该 word 的 label
+- token 没对应 word（j 为 None）→ 填 -100
+
+------
+
+## 如果一个“word”被拆成多个 token，会发生什么？
+
+比如英文或一些符号，可能 `text[i]` 被拆成 2 个 token：
+
+```text
+text[i] = "playing"
+tokens:  play  ##ing
+word_ids:  i     i
+```
+
+这时要让这两个 token 都继承同一个 word 的 label（或者只标第一个，其余 -100，这取决于你策略）。
+`word_ids()` 就能处理这种情况；你如果不做对齐，就一定会错位或长度不匹配。
+
+------
+
+## 总结一句话
+
+**tokenizer 分的是 text，但 labels 必须跟 token 对齐才能训练，所以 labels 要借助 tokenizer 的 word_ids() 做“扩展/插入 -100 / 复制”来对齐。**
+
