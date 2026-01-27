@@ -1,0 +1,1 @@
+docker logs 容器名
